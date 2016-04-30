@@ -12,7 +12,7 @@ import theano.tensor as T
 import lasagne
 import scipy.io
 from lasagne.layers import *
-
+import cPickle
 n_hidden = 300
 max_seq_len = 67
 learning_rate = 1e-3
@@ -174,6 +174,9 @@ def build_encoder_decoder_network():
     train, predict_and_get_loss, predict = build_decoder_network(tvars, enc_net_params, encoded_tvar, n_hidden, VOCAB_TARGET)
     return encode, train, predict_and_get_loss, predict
 
+def loadVocab(path):
+    return cPickle.load(open(path,'rb'))
+
 if __name__ == '__main__':
 
     encode, train, predict_and_get_loss, predict = build_encoder_decoder_network()
@@ -181,6 +184,8 @@ if __name__ == '__main__':
     train_set = load_data("train")
     dev_set   = load_data("dev")
     test_set  = load_data("test")
+
+    vocab = loadVocab("data/train.tgt.vocab.pickle")
 
     print "Training ..."
     batches = get_batches(train_set, batch_size=128, num_epochs=1)
@@ -206,3 +211,31 @@ if __name__ == '__main__':
 
         print "#{:3d}, mean loss = {}".format(i, np.mean(loss))
 
+    print "Testing on test-set..."
+    batches = get_batches(test_set, batch_size=1, num_epochs=1)
+    f = open("translation.txt","w")
+    for i, (x, x_mask, x_one_hot, y, y_mask, y_one_hot) in enumerate(batches):
+
+        encoded_msg = encode(x_one_hot, x_mask)
+
+        T = x.shape[1]
+        hid_prev = encoded_msg
+        next_input = np.zeros((1, 1, VOCAB_TARGET), dtype=np.float32)
+        mask = np.ones((1, 1), dtype=np.float32)
+        loss = np.zeros((T))
+
+        candidates = []
+
+        for t in range(int(T*1.5)):
+            posterior, hid_prev = predict(hid_prev, next_input, mask)
+            word_id = np.argmax(posterior)
+            next_input = to_one_hot(np.array([[word_id]]), VOCAB_TARGET)
+            candidate.append(vocab[word_id])
+            if word_id == 2: # TODO
+                break
+        f.write(" ".join(candidate))
+    f.close()
+
+
+
+            
