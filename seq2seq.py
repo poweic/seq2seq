@@ -38,7 +38,7 @@ def build_encoder_network(num_inputs, num_hidden):
 
     params = lasagne.layers.get_all_params(l_enc)
 
-    hid_out, cell_out = lasagne.layers.get_output(l_enc, {l_in: input})
+    hid_out, _ = lasagne.layers.get_output(l_enc, {l_in: input})
 
     tvars = [input, l_mask.input_var]
 
@@ -51,7 +51,7 @@ def build_decoder_network(tvars, enc_net_params, encoded_msg, num_hidden, num_ou
     input  = T.TensorType('float32', [None]*3)('input')
     target = T.TensorType('int64',   [None]*2)('target')
     hid_init = T.TensorType('float32', [None]*2)('hid_init')
-    cell_init = T.TensorType('float32', [None]*2)('cell_init')
+    # cell_init = T.TensorType('float32', list(encoded_msg.broadcastable))('cell_init')
 
     B, L = input.shape[0:2]
 
@@ -63,7 +63,7 @@ def build_decoder_network(tvars, enc_net_params, encoded_msg, num_hidden, num_ou
 
     l_dec = MyLSTMLayer(l_in, num_hidden, mask_input=l_mask,
                         grad_clipping=grad_clip,
-                        hid_init=encoded_msg, cell_init=cell_init,
+                        hid_init=encoded_msg,
                         nonlinearity=lasagne.nonlinearities.rectify,
                         only_return_final=False)
 
@@ -95,7 +95,7 @@ def build_decoder_network(tvars, enc_net_params, encoded_msg, num_hidden, num_ou
 
     updates = lasagne.updates.adagrad(loss, params, learning_rate)
 
-    tvars2 = [cell_init, input, l_mask.input_var, target]
+    tvars2 = [input, l_mask.input_var, target]
 
     # For train-set
     print "Compiling train ..."
@@ -103,11 +103,17 @@ def build_decoder_network(tvars, enc_net_params, encoded_msg, num_hidden, num_ou
 
     # For dev-set
     print "Compiling predict_and_get_loss..."
-    predict_and_get_loss = theano.function([hid_init] + tvars2, [posterior, hid_out, cell_out, loss], givens={encoded_msg: hid_init})
+    predict_and_get_loss = theano.function([hid_init] + tvars2, [posterior, hid_out, loss],
+                                           givens={encoded_msg: hid_init},
+                                           updates={l_dec.cell_init: cell_out}
+                                           )
     
     # For test-set
     print "Compiling predict..."
-    predict = theano.function([hid_init, cell_init, input, l_mask.input_var], [posterior, hid_out, cell_out], givens={encoded_msg: hid_init})
+    predict = theano.function([hid_init, input, l_mask.input_var], [posterior, hid_out],
+                              givens={encoded_msg: hid_init},
+                              updates={l_dec.cell_init: cell_out}
+                              )
 
     return train, predict_and_get_loss, predict
 
@@ -207,19 +213,15 @@ if __name__ == '__main__':
     startIdx=vocab["<s>"]
 
     vocab_rev = dict((v,k) for k,v in vocab.iteritems())
-    print vocab_rev
+    #print vocab_rev
 
     print "Training ..."
-    batches = get_batches(train_set, batch_size=1, num_epochs=10, randshuf=False)
+    batches = get_batches(train_set, batch_size=192, num_epochs=10, randshuf=False)
     for i, (x, x_mask, x_one_hot, y, y_mask, y_one_hot) in enumerate(batches):
-
-        batch_size = x.shape[0]
-        cell_init = np.zeros((batch_size, n_hidden), np.float32)
-
-        for j in range(1000):
-            loss = train(x_one_hot, x_mask, cell_init, y_one_hot, y_mask, y)
-            print "batch #{:4d}, loss = {}".format(i, loss)
-        break
+        #for j in range(100):
+        loss = train(x_one_hot, x_mask, y_one_hot, y_mask, y)
+        print "batch #{:4d}, loss = {}".format(i, loss)
+        #break
 
     '''
     print "Testing on dev-set..."
@@ -248,7 +250,7 @@ if __name__ == '__main__':
         encoded_msg = encode(x_one_hot, x_mask)
         T = np.sum(x_mask[0, ])
         hid_prev = encoded_msg
-        cell_prev = np.zeros_like(hid_prev)
+        print hid_prev.shape
         next_input = np.zeros((1, 1, VOCAB_TARGET), dtype=np.float32)
         mask = np.ones((1, 1), dtype=np.float32)
         candidates = []
@@ -256,15 +258,15 @@ if __name__ == '__main__':
         isEndOfSent = False
 
         for t in range(int(T*1.5)):
-            posterior, hid_prev, cell_prev = predict(hid_prev, cell_prev, next_input, mask)
+            posterior, hid_prev = predict(hid_prev, next_input, mask)
             # print posterior
             word_id = np.argmax(posterior)
             print vocab_rev[word_id]
-            next_input = to_one_hot(np.array([[word_id]]), VOCAB_TARGET)
+            #next_input = to_one_hot(np.array([[word_id]]), VOCAB_TARGET)
             #candidates.append(vocab_rev[word_id])
            
             #import ipdb; ipdb.set_trace()
-            '''
+            
             word_ids = np.argsort(posterior).flatten()[-10:][::-1]
             for w in word_ids:
                 if w == startIdx and t!=0:
@@ -274,18 +276,19 @@ if __name__ == '__main__':
                         continue
                 if w == endIdx: # TODO
                     isEndOfSent = True
+                next_input = to_one_hot(np.array([[w]]), VOCAB_TARGET)
                 candidates.append(vocab_rev[w])
                 break
 
             if isEndOfSent == True:
                 break
-            '''
+            
 
         if not isEndOfSent:
             candidates.append("</s>")
         print " ".join(candidates)
         f.write(" ".join(candidates)+"\n")
 
-        break
+        #break
 
     f.close()

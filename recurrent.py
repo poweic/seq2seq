@@ -34,7 +34,7 @@ class LSTMLayer(MergeLayer):
         f_t &= \sigma_f(x_t W_{xf} + h_{t-1} W_{hf}
                + w_{cf} \odot c_{t-1} + b_f)\\
         c_t &= f_t \odot c_{t - 1}
-               + i_t \odot \sigma_c(x_t W_{xc} + h_{t-1} W_{hc} + b_c)\\
+               + i_t\sigma_c(x_t W_{xc} + h_{t-1} W_{hc} + b_c)\\
         o_t &= \sigma_o(x_t W_{xo} + h_{t-1} W_{ho} + w_{co} \odot c_t + b_o)\\
         h_t &= o_t \odot \sigma_h(c_t)
 
@@ -59,16 +59,22 @@ class LSTMLayer(MergeLayer):
     nonlinearity : callable or None
         The nonlinearity that is applied to the output (:math:`\sigma_h`). If
         None is provided, no nonlinearity will be applied.
-    cell_init : callable, np.ndarray, theano.shared or :class:`Layer`
-        Initializer for initial cell state (:math:`c_0`).
-    hid_init : callable, np.ndarray, theano.shared or :class:`Layer`
-        Initializer for initial hidden state (:math:`h_0`).
+    cell_init : callable, np.ndarray, theano.shared, TensorVariable or Layer
+        Initializer for initial cell state (:math:`c_0`).  If a
+        TensorVariable (Theano expression) is supplied, it will not be learned
+        regardless of the value of `learn_init`.
+    hid_init : callable, np.ndarray, theano.shared, TensorVariable or Layer
+        Initializer for initial hidden state (:math:`h_0`).  If a
+        TensorVariable (Theano expression) is supplied, it will not be learned
+        regardless of the value of `learn_init`.
     backwards : bool
         If True, process the sequence backwards and then reverse the
         output again such that the output from the layer is always
         from :math:`x_1` to :math:`x_n`.
     learn_init : bool
-        If True, initial hidden values are learned.
+        If True, initial hidden values are learned. If `hid_init` or
+        `cell_init` are TensorVariables then the TensorVariable is used and
+        `learn_init` is ignored for that initial state.
     peepholes : bool
         If True, the LSTM uses peephole connections.
         When False, `ingate.W_cell`, `forgetgate.W_cell` and
@@ -214,14 +220,26 @@ class LSTMLayer(MergeLayer):
                 outgate.W_cell, (num_units, ), name="W_cell_to_outgate")
 
         # Setup initial values for the cell and the hidden units
-        if isinstance(cell_init, Layer):
+        if isinstance(cell_init, T.TensorVariable):
+            if cell_init.ndim != 2:
+                raise ValueError(
+                    "When cell_init is provided as a TensorVariable, it should"
+                    " have 2 dimensions and have shape (num_batch, num_units)")
+            self.cell_init = cell_init
+        elif isinstance(cell_init, Layer):
             self.cell_init = cell_init
         else:
             self.cell_init = self.add_param(
                 cell_init, (1, num_units), name="cell_init",
                 trainable=learn_init, regularizable=False)
 
-        if isinstance(hid_init, Layer):
+        if isinstance(hid_init, T.TensorVariable):
+            if hid_init.ndim != 2:
+                raise ValueError(
+                    "When hid_init is provided as a TensorVariable, it should "
+                    "have 2 dimensions and have shape (num_batch, num_units)")
+            self.hid_init = hid_init
+        elif isinstance(hid_init, Layer):
             self.hid_init = hid_init
         else:
             self.hid_init = self.add_param(
@@ -367,8 +385,9 @@ class LSTMLayer(MergeLayer):
 
             # Skip over any input with mask 0 by copying the previous
             # hidden state; proceed normally for any input with mask 1.
-            cell = T.switch(mask_n, cell, cell_previous)
-            hid = T.switch(mask_n, hid, hid_previous)
+            not_mask = 1 - mask_n
+            cell = cell*mask_n + cell_previous*not_mask
+            hid = hid*mask_n + hid_previous*not_mask
 
             return [cell, hid]
 
@@ -384,11 +403,19 @@ class LSTMLayer(MergeLayer):
             step_fun = step
 
         ones = T.ones((num_batch, 1))
-        if not isinstance(self.cell_init, Layer):
+        if isinstance(self.cell_init, Layer):
+            pass
+        elif isinstance(self.cell_init, T.TensorVariable):
+            cell_init = self.cell_init
+        else:
             # Dot against a 1s vector to repeat to shape (num_batch, num_units)
             cell_init = T.dot(ones, self.cell_init)
 
-        if not isinstance(self.hid_init, Layer):
+        if isinstance(self.hid_init, Layer):
+            pass
+        elif isinstance(self.hid_init, T.TensorVariable):
+            hid_init = self.hid_init
+        else:
             # Dot against a 1s vector to repeat to shape (num_batch, num_units)
             hid_init = T.dot(ones, self.hid_init)
 
@@ -431,8 +458,8 @@ class LSTMLayer(MergeLayer):
         # When it is requested that we only return the final sequence step,
         # we need to slice it out immediately after scan is applied
         if self.only_return_final:
-            cell_out = cell_out[-1]
             hid_out = hid_out[-1]
+            cell_out = cell_out[-1]
         else:
             # dimshuffle back to (n_batch, n_time_steps, n_features))
             hid_out = hid_out.dimshuffle(1, 0, 2)
